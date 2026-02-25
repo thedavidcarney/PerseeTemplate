@@ -6,8 +6,8 @@ EditorBuildSettings:
   serializedVersion: 2
   m_Scenes:
   - enabled: 1
-    path: Assets/Orbbec/Scenes/DepthViewer.unity
-    guid: 06af3116746e8c44297f0a7ff079bea9
+    path: Assets/Scenes/DepthProcessing.unity
+    guid: 951e8d494ebdeec42ba7500b6204d38f
   m_configObjects:
     com.unity.input.settings.actions: {fileID: -944628639613478452, guid: 289c1b55c9541489481df5cc06664110, type: 3}
   m_UseUCBPForAssetBundles: 0
