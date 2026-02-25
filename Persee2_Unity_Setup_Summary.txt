@@ -1,0 +1,262 @@
+ORBBEC PERSEE 2 - UNITY 6 SETUP SUMMARY
+========================================
+Reference guide for getting depth camera working on Persee 2 with Unity 6 + OrbbecUnitySDK v1.1.9
+
+
+BUILD SETTINGS
+--------------
+- Scripting Backend: MONO (not IL2CPP)
+  Reason: Orbbec DLL uses instance method delegates that IL2CPP cannot marshal to native code
+
+- Target Architecture: ARMv7 only (uncheck ARM64)
+  Reason: Persee 2 is 32-bit ARM only. Sample APK confirms armeabi-v7a.
+
+- Target API Level: Unity 6 forces 35/36, that's fine. Permissions handled at runtime instead.
+
+
+NATIVE LIBRARIES
+----------------
+The OrbbecUnitySDK release package contains Windows-only (x86_64) native libs.
+You need to pull ARM32 .so files from the working Orbbec sample APK on the device.
+
+Steps:
+1. Install the sample APK: OrbbecSDK_Sample_v1.1.9_*_android.apk
+2. Find its path: adb shell pm path com.orbbec.unitysdk.sample
+3. Pull the 5 .so files from: /data/app/com.orbbec.unitysdk.sample-[hash]==/lib/arm/
+
+Files needed:
+  - libOrbbecSDK.so
+  - libd2c.so
+  - libobsensor_jni.so
+  - libpostfilter.so
+  - libomp.so
+
+Place all 5 in: Assets/Plugins/Android/libs/armeabi-v7a/
+In Unity Inspector for each .so: Platform = Android, CPU = ARMv7
+
+
+SDK CONFIG FILE
+---------------
+The native SDK needs a config XML file on the real filesystem (not inside the APK).
+
+Steps:
+1. Extract OrbbecSDKConfig_v1.0.xml from the sample APK (it's in the assets/ folder)
+2. Place it in your Unity project at: Assets/StreamingAssets/OrbbecSDKConfig_v1.0.xml
+3. On startup, copy it to Application.persistentDataPath before initializing Context
+4. Pass the copied path to: new Context(configPath) instead of new Context()
+
+Reason: Android StreamingAssets are inside the APK as a jar:// URI.
+The native C++ SDK cannot read jar:// URIs, it needs a real /storage/... path.
+
+
+ORBBECCONTEXT.CS CHANGES
+------------------------
+Replace InitSDK() with:
+
+    private void InitSDK()
+    {
+        Debug.LogFormat("Orbbec SDK version: {0}.{1}.{2}",
+            Version.GetMajorVersion(),
+            Version.GetMinorVersion(),
+            Version.GetPatchVersion());
+
+#if !UNITY_EDITOR && UNITY_ANDROID
+        string configPath = CopyConfigToCache("OrbbecSDKConfig_v1.0.xml");
+        Debug.Log($"Loading Orbbec config from: {configPath}");
+        context = new Context(configPath);
+        AndroidDeviceManager.Init();
+#else
+        context = new Context();
+#endif
+        hasInit = true;
+    }
+
+    private string CopyConfigToCache(string filename)
+    {
+        string destPath = System.IO.Path.Combine(Application.persistentDataPath, filename);
+        try
+        {
+            AndroidJavaClass unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+            AndroidJavaObject activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+            AndroidJavaObject assetManager = activity.Call<AndroidJavaObject>("getAssets");
+            AndroidJavaObject inputStream = assetManager.Call<AndroidJavaObject>("open", filename);
+            var bytes = new System.Collections.Generic.List<byte>();
+            int b;
+            while ((b = inputStream.Call<int>("read")) != -1)
+                bytes.Add((byte)b);
+            inputStream.Call("close");
+            System.IO.File.WriteAllBytes(destPath, bytes.ToArray());
+            Debug.Log($"Config copied successfully, {bytes.Count} bytes to: {destPath}");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Failed to copy config: {e.Message}");
+        }
+        return destPath;
+    }
+
+Also fix the obsolete API warning - change:
+    instance = FindObjectOfType<OrbbecContext>();
+To:
+    instance = FindAnyObjectByType<OrbbecContext>();
+
+
+ANDROIDDEVICEMANAGER.CS CHANGES
+--------------------------------
+Full replacement:
+
+    public static void Init()
+    {
+        Debug.Log("init android device");
+        Application.RequestUserAuthorization(UserAuthorization.WebCam);
+
+        AndroidJavaClass unityPlayer = new AndroidJavaClass("com.unity3d.player.UnityPlayer");
+        AndroidJavaObject activity = unityPlayer.GetStatic<AndroidJavaObject>("currentActivity");
+
+        // Request runtime permissions (required on Android 6+ with high targetSdk)
+        try
+        {
+            activity.Call("requestPermissions",
+                new string[] {
+                    "android.permission.WRITE_EXTERNAL_STORAGE",
+                    "android.permission.READ_EXTERNAL_STORAGE",
+                    "android.permission.CAMERA"
+                }, 1001);
+            Debug.Log("Permission request sent");
+        }
+        catch (System.Exception e)
+        {
+            Debug.LogError($"Permission request failed: {e.Message}");
+        }
+
+        // Wait for user to accept permission dialogs on first launch
+        System.Threading.Thread.Sleep(3000);
+
+        UsbPermissionUtil = new AndroidJavaClass("com.orbbec.obsensor.usbdevice.UsbPermissionUtil");
+        UsbPermissionUtil.CallStatic("waitForUsbDevice", activity);
+        Debug.Log("android device has init");
+    }
+
+Note: On first launch user must accept permission dialogs.
+App may need to be relaunched after accepting. This is a one-time setup.
+Permissions persist permanently unless app is uninstalled.
+
+
+ORBBECDEVICE.CS CHANGES
+------------------------
+Replace WaitForDevice coroutine - remove EnableNetDeviceEnumeration(true).
+The Persee 2 internal sensor is NOT a network device, this call interferes.
+
+Use device changed callback with static method (required for Mono on Android):
+
+    private static OrbbecDevice _instance;
+
+    void Start()
+    {
+        _instance = this;
+        context = OrbbecContext.Instance.Context;
+        if(OrbbecContext.Instance.HasInit)
+        {
+            context.SetDeviceChangedCallback(OnDeviceChangedStatic);
+            StartCoroutine(TryImmediateQuery());
+        }
+    }
+
+    private IEnumerator TryImmediateQuery()
+    {
+        yield return new WaitForSeconds(5f);
+        DeviceList deviceList = context.QueryDeviceList();
+        if (deviceList.DeviceCount() > (uint)deviceIndex)
+        {
+            device = deviceList.GetDevice((uint)deviceIndex);
+            LogDeviceInfo();
+            deviceList.Dispose();
+            onDeviceFound?.Invoke(device);
+        }
+        else
+        {
+            deviceList.Dispose();
+        }
+    }
+
+    private static void OnDeviceChangedStatic(DeviceList added, DeviceList removed)
+    {
+        if (added.DeviceCount() > 0 && _instance != null && _instance.device == null)
+        {
+            _instance.device = added.GetDevice(0);
+            _instance.LogDeviceInfo();
+            added.Dispose();
+            removed.Dispose();
+            _instance.onDeviceFound?.Invoke(_instance.device);
+        }
+        else
+        {
+            added.Dispose();
+            removed.Dispose();
+        }
+    }
+
+
+ANDROIDMANIFEST.XML
+--------------------
+Location: Assets/Plugins/Android/AndroidManifest.xml
+
+Key settings:
+- android:installLocation="internalOnly" on manifest root element
+- Permissions: CAMERA, READ_EXTERNAL_STORAGE, WRITE_EXTERNAL_STORAGE, INTERNET
+- Disable UnityPlayerGameActivity, use UnityPlayerActivity only
+  (GameActivity has compatibility issues with third-party SDKs on Android 9)
+
+
+GRADLE SETTINGS
+---------------
+In mainTemplate.gradle and launcherTemplate.gradle, inside android {} block:
+
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+            pickFirsts += [
+                'lib/arm64-v8a/libc++_shared.so',
+                'lib/armeabi-v7a/libc++_shared.so'
+            ]
+        }
+    }
+
+Reason: Resolves duplicate libc++_shared.so between Unity IL2CPP and Orbbec AAR.
+useLegacyPackaging = true ensures .so files are extracted uncompressed (required for loading).
+
+
+ONE-TIME DEVICE SETUP
+----------------------
+Run once via ADB to allow sideloading without verification popup:
+    adb shell settings put global package_verifier_enable 0
+
+First launch flow:
+1. Install APK via adb install
+2. Launch app - permission dialogs will appear
+3. Accept all permissions
+4. App may show blank/not working on first launch
+5. Relaunch app - depth feed should work from this point forward
+
+
+ADB QUICK REFERENCE
+--------------------
+Check connected devices:
+    adb devices
+
+Install APK:
+    adb install "path\to\app.apk"
+
+Uninstall:
+    adb uninstall com.yourpackage.name
+
+Grant permissions manually (if needed for testing):
+    adb shell pm grant com.yourpackage.name android.permission.CAMERA
+    adb shell pm grant com.yourpackage.name android.permission.READ_EXTERNAL_STORAGE
+    adb shell pm grant com.yourpackage.name android.permission.WRITE_EXTERNAL_STORAGE
+
+Check SDK log:
+    adb shell cat /storage/emulated/0/Android/data/com.yourpackage.name/cache/OrbbecLog/OrbbecSDK.log.txt
+
+Check installed packages:
+    adb shell pm list packages | findstr orbbec

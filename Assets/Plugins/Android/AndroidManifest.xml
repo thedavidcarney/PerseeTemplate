@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:installLocation="internalOnly">
+
+    <!-- Storage: required by OrbbecSDK on Android 9 (Persee 2 firmware) -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+
+    <!-- Camera: OrbbecSDK accesses the depth/RGB sensor via the camera subsystem -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- USB host: communicate with the depth sensor over the Persee 2's internal USB bus -->
+    <uses-permission android:name="android.permission.USB_PERMISSION" />
+
+    <!-- Declare camera as NOT required — depth sensor is accessed via Orbbec SDK
+         directly, not the standard Android camera2 API -->
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
+
+    <!-- Persee 2 has no touchscreen — must declare this or install may be refused -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+
+    <!-- USB host mode -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+
+    <application>
+        <!-- Activity entry point — active -->
+        <activity android:name="com.unity3d.player.UnityPlayerActivity"
+                  android:theme="@style/UnityThemeSelector">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
+        </activity>
+
+        <!-- GameActivity disabled — theme overridden to one that exists,
+             tools:replace ensures our values win over Unity's internal manifest -->
+        <activity android:name="com.unity3d.player.UnityPlayerGameActivity"
+                  android:theme="@style/UnityThemeSelector"
+                  android:enabled="false"
+                  tools:replace="android:theme,android:enabled">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+            <meta-data android:name="unityplayer.UnityActivity" android:value="true" />
+            <meta-data android:name="android.app.lib_name" android:value="game" />
+        </activity>
+    </application>
+
+</manifest>
