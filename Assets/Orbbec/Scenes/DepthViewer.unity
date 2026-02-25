@@ -619,7 +619,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: '::'
   minDepth: 0
   maxDepth: 1
-  stepSize: 1
+  stepSize: 0.5
 --- !u!1660057539 &9223372036854775807
 SceneRoots:
   m_ObjectHideFlags: 0

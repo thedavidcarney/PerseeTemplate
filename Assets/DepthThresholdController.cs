@@ -11,6 +11,10 @@ public class DepthThresholdController : MonoBehaviour
     void Start()
     {
         mat = GetComponent<Renderer>().material;
+        minDepth = PlayerPrefs.GetFloat("minDepth", 0.0f);
+        maxDepth = PlayerPrefs.GetFloat("maxDepth", 1.0f);
+        mat.SetFloat("_MinDepth", minDepth);
+        mat.SetFloat("_MaxDepth", maxDepth);
     }
 
     void Update()
@@ -37,5 +41,12 @@ public class DepthThresholdController : MonoBehaviour
 
         if (Time.frameCount % 60 == 0)
             Debug.Log($"Depth range: {minDepth / 6.5535f * 10000f:F0}mm - {maxDepth / 6.5535f * 10000f:F0}mm");
+    }
+
+    void OnApplicationQuit()
+    {
+        PlayerPrefs.SetFloat("minDepth", minDepth);
+        PlayerPrefs.SetFloat("maxDepth", maxDepth);
+        PlayerPrefs.Save();
     }
 }
