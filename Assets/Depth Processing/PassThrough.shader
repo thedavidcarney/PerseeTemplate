@@ -1,8 +1,8 @@
-Shader "Custom/SDFSeed"
+Shader "Custom/PassThrough"
 {
     Properties
     {
-        _MainTex ("Binary Mask", 2D) = "black" {}
+        _MainTex ("Input", 2D) = "black" {}
     }
     SubShader
     {
@@ -38,15 +38,9 @@ Shader "Custom/SDFSeed"
                 return o;
             }
 
-            float4 frag (v2f i) : SV_Target
+            fixed4 frag (v2f i) : SV_Target
             {
-                float mask = tex2D(_MainTex, i.uv).r;
-                // White pixels encode their own UV as seed position
-                // Black pixels encode sentinel value (-1, -1) meaning no seed
-                if(mask > 0.5)
-                    return float4(i.uv.x, i.uv.y, 0, 1);
-                else
-                    return float4(-1, -1, 0, 1);
+                return tex2D(_MainTex, i.uv);
             }
             ENDCG
         }

@@ -5,17 +5,20 @@ namespace DepthProcessing
 {
     public class SDFContoursPass : StylePass
     {
-        private Material seedMat;
-        private Material jumpMat;
-        private Material distanceMat;
-        private Material contourMat;
+        private ComputeShader compute;
 
+        private int seedKernel;
+        private int jumpKernel;
+        private int distanceKernel;
+        private int contourKernel;
+
+        private RenderTexture maskRT;
         private RenderTexture seedRT;
         private RenderTexture jfaRT_A;
         private RenderTexture jfaRT_B;
         private RenderTexture distanceRT;
-        private RenderTexture fullResRT;
-        private RenderTexture fullResMaskRT;
+        private RenderTexture outputRT;
+        private RenderTexture presentRT;
 
         private float frequency;
         private float lineWidth;
@@ -30,58 +33,30 @@ namespace DepthProcessing
 
         private List<DepthParameter> parameters;
 
-        public override RenderTextureFormat OutputFormat => RenderTextureFormat.Default;
-        public RenderTexture FullResOutput => fullResRT;
+        public override RenderTextureFormat OutputFormat => RenderTextureFormat.RFloat; // THE FIX
+        public RenderTexture FullResOutput => presentRT;
 
-        public float Frequency
-        {
-            get => frequency;
-            set { frequency = value; contourMat?.SetFloat("_Frequency", value); }
-        }
-
-        public float LineWidth
-        {
-            get => lineWidth;
-            set { lineWidth = value; contourMat?.SetFloat("_LineWidth", value); }
-        }
-
-        public float AnimSpeed
-        {
-            get => animSpeed;
-            set { animSpeed = value; contourMat?.SetFloat("_AnimSpeed", value); }
-        }
-
-        public float MaxDist
-        {
-            get => maxDist;
-            set { maxDist = value; distanceMat?.SetFloat("_MaxDist", value); }
-        }
-
-        public Color InsideColor
-        {
-            get => insideColor;
-            set { insideColor = value; contourMat?.SetColor("_InsideColor", value); }
-        }
-
-        public Color OutsideColor
-        {
-            get => outsideColor;
-            set { outsideColor = value; contourMat?.SetColor("_OutsideColor", value); }
-        }
-
-        public Color LineColor
-        {
-            get => lineColor;
-            set { lineColor = value; contourMat?.SetColor("_LineColor", value); }
-        }
+        public float Frequency { get => frequency; set { frequency = value; } }
+        public float LineWidth { get => lineWidth; set { lineWidth = value; } }
+        public float AnimSpeed { get => animSpeed; set { animSpeed = value; } }
+        public float MaxDist { get => maxDist; set { maxDist = value; } }
+        public Color InsideColor { get => insideColor; set { insideColor = value; } }
+        public Color OutsideColor { get => outsideColor; set { outsideColor = value; } }
+        public Color LineColor { get => lineColor; set { lineColor = value; } }
 
         public SDFContoursPass(string passName = "SDFContours")
         {
             name = passName;
-            seedMat = new Material(Shader.Find("Custom/SDFSeed"));
-            jumpMat = new Material(Shader.Find("Custom/SDFJump"));
-            distanceMat = new Material(Shader.Find("Custom/SDFDistance"));
-            contourMat = new Material(Shader.Find("Custom/SDFContours"));
+            compute = Resources.Load<ComputeShader>("SDFCompute");
+            if(compute == null)
+            {
+                Debug.LogError("SDFCompute not found in Resources folder");
+                return;
+            }
+            seedKernel = compute.FindKernel("SeedKernel");
+            jumpKernel = compute.FindKernel("JumpKernel");
+            distanceKernel = compute.FindKernel("DistanceKernel");
+            contourKernel = compute.FindKernel("ContourKernel");
             LoadPrefs();
             BuildParameters();
         }
@@ -109,10 +84,11 @@ namespace DepthProcessing
             };
         }
 
-        private RenderTexture CreateRT(int width, int height, RenderTextureFormat format)
+        private RenderTexture CreateRT(int width, int height, RenderTextureFormat format, bool randomWrite = false)
         {
             var rt = new RenderTexture(width, height, 0, format);
             rt.filterMode = FilterMode.Bilinear;
+            rt.enableRandomWrite = randomWrite;
             rt.Create();
             return rt;
         }
@@ -125,49 +101,63 @@ namespace DepthProcessing
             if(seedRT == null || seedRT.width != jfaWidth || seedRT.height != jfaHeight)
             {
                 ReleaseRTs();
-                seedRT = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.RGFloat);
-                jfaRT_A = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.RGFloat);
-                jfaRT_B = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.RGFloat);
-                distanceRT = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.RFloat);
+                maskRT = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.RFloat, true);
+                seedRT = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.ARGBFloat, true);
+                jfaRT_A = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.ARGBFloat, true);
+                jfaRT_B = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.ARGBFloat, true);
+                distanceRT = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.RFloat, true);
+                outputRT = CreateRT(jfaWidth, jfaHeight, RenderTextureFormat.ARGBFloat, true);
             }
 
-            if(fullResRT == null || fullResRT.width != OutputWidth || fullResRT.height != OutputHeight)
+            if(presentRT == null || presentRT.width != srcWidth || presentRT.height != srcHeight)
             {
-                if(fullResRT != null) fullResRT.Release();
-                if(fullResMaskRT != null) fullResMaskRT.Release();
-                fullResRT = CreateRT(OutputWidth, OutputHeight, RenderTextureFormat.Default);
-                fullResMaskRT = CreateRT(srcWidth, srcHeight, RenderTextureFormat.RFloat);
+                if(presentRT != null) presentRT.Release();
+                presentRT = CreateRT(srcWidth, srcHeight, RenderTextureFormat.ARGBFloat, false);
             }
         }
 
         public override void Process(RenderTexture src, RenderTexture dst)
         {
+            if(compute == null) return;
             EnsureRTs(src.width, src.height);
+
+            int jfaWidth = seedRT.width;
+            int jfaHeight = seedRT.height;
+            int threadGroupsX = Mathf.CeilToInt(jfaWidth / 8.0f);
+            int threadGroupsY = Mathf.CeilToInt(jfaHeight / 8.0f);
+
+            Graphics.Blit(src, maskRT);
 
             frameSkipCounter++;
             if(frameSkipCounter >= FRAME_SKIP)
             {
                 frameSkipCounter = 0;
 
-                // 1. Seed pass at half res
-                jumpMat.SetVector("_TexelSize", new Vector4(1.0f / seedRT.width, 1.0f / seedRT.height, 0, 0));
-                Graphics.Blit(src, seedRT, seedMat);
+                compute.SetTexture(seedKernel, "_MaskTex", maskRT);
+                compute.SetTexture(seedKernel, "_SeedTex", seedRT);
+                compute.SetInt("_Width", jfaWidth);
+                compute.SetInt("_Height", jfaHeight);
+                compute.Dispatch(seedKernel, threadGroupsX, threadGroupsY, 1);
 
-                // 2. JFA passes
                 Graphics.Blit(seedRT, jfaRT_A);
 
                 RenderTexture current = jfaRT_A;
                 RenderTexture next = jfaRT_B;
 
-                int maxDimension = Mathf.Max(seedRT.width, seedRT.height);
+                int maxDimension = Mathf.Max(jfaWidth, jfaHeight);
                 int stepSize = Mathf.NextPowerOfTwo(maxDimension) / 2;
                 int maxIterations = 20;
                 int iterations = 0;
 
                 while(stepSize >= 1 && iterations < maxIterations)
                 {
-                    jumpMat.SetFloat("_StepSize", stepSize);
-                    Graphics.Blit(current, next, jumpMat);
+                    compute.SetTexture(jumpKernel, "_JumpSrc", current);
+                    compute.SetTexture(jumpKernel, "_JumpDst", next);
+                    compute.SetInt("_StepSize", stepSize);
+                    compute.SetInt("_Width", jfaWidth);
+                    compute.SetInt("_Height", jfaHeight);
+                    compute.Dispatch(jumpKernel, threadGroupsX, threadGroupsY, 1);
+
                     var tmp = current;
                     current = next;
                     next = tmp;
@@ -175,27 +165,30 @@ namespace DepthProcessing
                     iterations++;
                 }
 
-                if(iterations >= maxIterations)
-                    Debug.LogError("JFA loop hit max iterations - something is wrong");
-
-                // 3. Distance pass
-                distanceMat.SetFloat("_MaxDist", maxDist);
-                Graphics.Blit(current, distanceRT, distanceMat);
+                compute.SetTexture(distanceKernel, "_JumpSrc", current);
+                compute.SetTexture(distanceKernel, "_DistanceTex", distanceRT);
+                compute.SetInt("_Width", jfaWidth);
+                compute.SetInt("_Height", jfaHeight);
+                compute.SetFloat("_MaxDist", maxDist);
+                compute.Dispatch(distanceKernel, threadGroupsX, threadGroupsY, 1);
             }
 
-            // 4. Contour pass runs every frame using cached distanceRT
-            Graphics.Blit(src, fullResMaskRT);
+            compute.SetTexture(contourKernel, "_MaskTex", maskRT);
+            compute.SetTexture(contourKernel, "_DistanceTex", distanceRT);
+            compute.SetTexture(contourKernel, "_OutputTex", outputRT);
+            compute.SetInt("_Width", jfaWidth);
+            compute.SetInt("_Height", jfaHeight);
+            compute.SetFloat("_Frequency", frequency);
+            compute.SetFloat("_LineWidth", lineWidth);
+            compute.SetFloat("_AnimSpeed", animSpeed);
+            compute.SetFloat("_Time", Time.time);
+            compute.SetVector("_InsideColor", new Vector4(insideColor.r, insideColor.g, insideColor.b, 1));
+            compute.SetVector("_OutsideColor", new Vector4(outsideColor.r, outsideColor.g, outsideColor.b, 1));
+            compute.SetVector("_LineColor", new Vector4(lineColor.r, lineColor.g, lineColor.b, 1));
+            compute.Dispatch(contourKernel, threadGroupsX, threadGroupsY, 1);
 
-            contourMat.SetFloat("_Frequency", frequency);
-            contourMat.SetFloat("_LineWidth", lineWidth);
-            contourMat.SetFloat("_AnimSpeed", animSpeed);
-            contourMat.SetColor("_InsideColor", insideColor);
-            contourMat.SetColor("_OutsideColor", outsideColor);
-            contourMat.SetColor("_LineColor", lineColor);
-            contourMat.SetTexture("_MaskTex", fullResMaskRT);
-            Graphics.Blit(distanceRT, fullResRT, contourMat);
-
-            Graphics.Blit(fullResRT, dst);
+            Graphics.Blit(outputRT, presentRT);
+            Graphics.Blit(outputRT, dst);
         }
 
         public override void LoadPrefs()
@@ -239,17 +232,18 @@ namespace DepthProcessing
 
         private void ReleaseRTs()
         {
+            if(maskRT != null) { maskRT.Release(); maskRT = null; }
             if(seedRT != null) { seedRT.Release(); seedRT = null; }
             if(jfaRT_A != null) { jfaRT_A.Release(); jfaRT_A = null; }
             if(jfaRT_B != null) { jfaRT_B.Release(); jfaRT_B = null; }
             if(distanceRT != null) { distanceRT.Release(); distanceRT = null; }
+            if(outputRT != null) { outputRT.Release(); outputRT = null; }
         }
 
         public void Dispose()
         {
             ReleaseRTs();
-            if(fullResRT != null) { fullResRT.Release(); fullResRT = null; }
-            if(fullResMaskRT != null) { fullResMaskRT.Release(); fullResMaskRT = null; }
+            if(presentRT != null) { presentRT.Release(); presentRT = null; }
         }
 
         public override List<DepthParameter> GetParameters() => parameters;

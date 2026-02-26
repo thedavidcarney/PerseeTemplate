@@ -1,0 +1,113 @@
+#pragma kernel SeedKernel
+#pragma kernel JumpKernel
+#pragma kernel DistanceKernel
+#pragma kernel ContourKernel
+
+Texture2D<float> _MaskTex;
+RWTexture2D<float4> _SeedTex;
+RWTexture2D<float4> _JumpSrc;
+RWTexture2D<float4> _JumpDst;
+RWTexture2D<float> _DistanceTex;
+RWTexture2D<float4> _OutputTex;
+
+int _StepSize;
+int _Width;
+int _Height;
+float _MaxDist;
+float _Frequency;
+float _LineWidth;
+float _AnimSpeed;
+float _Time;
+float4 _InsideColor;
+float4 _OutsideColor;
+float4 _LineColor;
+
+[numthreads(8,8,1)]
+void SeedKernel(uint3 id : SV_DispatchThreadID)
+{
+    if(id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+
+    float mask = _MaskTex[id.xy];
+    if(mask > 0.5)
+    {
+        float2 uv = float2((float)id.x / _Width, (float)id.y / _Height);
+        _SeedTex[id.xy] = float4(uv.x, uv.y, 0, 1);
+    }
+    else
+    {
+        _SeedTex[id.xy] = float4(-1, -1, 0, 0);
+    }
+}
+
+[numthreads(8,8,1)]
+void JumpKernel(uint3 id : SV_DispatchThreadID)
+{
+    if(id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+
+    float2 uv = float2((float)id.x / _Width, (float)id.y / _Height);
+    float2 nearestSeed = float2(-1, -1);
+    float nearestDist = 1e10;
+
+    for(int x = -1; x <= 1; x++)
+    {
+        for(int y = -1; y <= 1; y++)
+        {
+            int2 samplePos = int2(id.xy) + int2(x, y) * _StepSize;
+            if(samplePos.x < 0 || samplePos.x >= _Width || 
+               samplePos.y < 0 || samplePos.y >= _Height) continue;
+
+            float4 sample = _JumpSrc[samplePos];
+            if(sample.w > 0.5)
+            {
+                float2 seed = sample.xy;
+                float dist = distance(uv, seed);
+                if(dist < nearestDist)
+                {
+                    nearestDist = dist;
+                    nearestSeed = seed;
+                }
+            }
+        }
+    }
+
+    if(nearestSeed.x >= 0)
+        _JumpDst[id.xy] = float4(nearestSeed.x, nearestSeed.y, 0, 1);
+    else
+        _JumpDst[id.xy] = float4(-1, -1, 0, 0);
+}
+
+[numthreads(8,8,1)]
+void DistanceKernel(uint3 id : SV_DispatchThreadID)
+{
+    if(id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+
+    float2 uv = float2((float)id.x / _Width, (float)id.y / _Height);
+    float4 seedData = _JumpSrc[id.xy];
+
+    if(seedData.w < 0.5)
+    {
+        _DistanceTex[id.xy] = 1.0;
+        return;
+    }
+
+    float dist = distance(uv, seedData.xy);
+    _DistanceTex[id.xy] = saturate(dist / _MaxDist);
+}
+
+[numthreads(8,8,1)]
+void ContourKernel(uint3 id : SV_DispatchThreadID)
+{
+    if(id.x >= (uint)_Width || id.y >= (uint)_Height) return;
+
+    float dist = _DistanceTex[id.xy];
+    float mask = _MaskTex[id.xy];
+    float inside = step(0.5, mask);
+
+    float bands = sin((dist * _Frequency + _Time * _AnimSpeed) * 3.14159265);
+    float contourLine = (1.0 - smoothstep(0.0, _LineWidth, abs(bands))) * (1.0 - inside);
+
+    float4 baseColor = lerp(_OutsideColor, _InsideColor, inside);
+    float4 finalColor = lerp(baseColor, _LineColor, contourLine);
+
+    _OutputTex[id.xy] = finalColor;
+}

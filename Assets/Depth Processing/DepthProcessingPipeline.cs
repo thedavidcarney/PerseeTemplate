@@ -100,8 +100,6 @@ namespace DepthProcessing
             {
                 if(pass is TemporalNoisePass temporal)
                     temporal.Dispose();
-                if(pass is SDFContoursPass sdf)
-                    sdf.Dispose();
             }
         }
     }
