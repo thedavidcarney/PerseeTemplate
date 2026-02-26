@@ -52,6 +52,7 @@ public class DepthProcessingManager : MonoBehaviour
             pipeline.passes.Add(new ThresholdPass());
             pipeline.passes.Add(new ErodePass());
             pipeline.passes.Add(new DilatePass());
+            pipeline.passes.Add(new UpscaleAndCenterPass());
             pipeline.passes.Add(new SDFContoursPass());
 
             pipeline.Initialize(obDepthFrame.width, obDepthFrame.height);
