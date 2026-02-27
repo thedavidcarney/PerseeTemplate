@@ -79,6 +79,9 @@ namespace DepthProcessing
             else if(name.StartsWith("UpscaleAndCenter")) pass = new UpscaleAndCenterPass(name);
             else if(name.StartsWith("SDFContours"))      pass = new SDFContoursPass(name);
             else if(name.StartsWith("RainbowTrails"))    pass = new RainbowTrailsPass(name);
+            else if(name.StartsWith("PinWall"))          pass = new PinWallPass(name);
+            else if(name.StartsWith("DepthGhost"))          pass = new DepthGhostPass(name);
+            else if(name.StartsWith("BoxBlur"))          pass = new BoxBlurPass(name);
 
             return pass;
         }
@@ -169,6 +172,10 @@ namespace DepthProcessing
                     upscaleandcenter.Dispose();
                 if(pass is RainbowTrailsPass rainbow)
                     rainbow.Dispose();
+                if(pass is PinWallPass pinwall)
+                    pinwall.Dispose();
+                if(pass is DepthGhostPass depthghost)
+                    depthghost.Dispose();
             }
         }
     }

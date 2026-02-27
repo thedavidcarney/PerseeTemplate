@@ -35,7 +35,6 @@ public class DepthProcessingManager : MonoBehaviour
         displayQuad.material = displayMat;
         displayQuad.transform.localScale = QUAD_SCALE_DEPTH;
 
-        // Load saved depth resolution and switch to it
         currentProfileWidth = PlayerPrefs.GetInt(PROFILE_WIDTH_KEY, 640);
         if(currentProfileWidth != 640)
             RestartWithProfile(currentProfileWidth);
@@ -63,7 +62,7 @@ public class DepthProcessingManager : MonoBehaviour
 
             depthTexture = new Texture2D(obDepthFrame.width, obDepthFrame.height, TextureFormat.R16, false);
 
-            // Try to restore saved pass list, fall back to defaults
+            // Restore saved pass list, fall back to defaults on first run
             if(!pipeline.TryLoadPassList())
             {
                 pipeline.passes.Add(new DepthNormalizePass());
@@ -96,27 +95,39 @@ if(obDepthFrame.width != depthTexture.width || obDepthFrame.height != depthTextu
         float t3   = Time.realtimeSinceStartup;
 
         bool      hasActiveStylePass = HasActiveStylePass();
-        StylePass activeStylePass    = hasActiveStylePass ? GetActiveStylePass() : null;
+        StylePass activeStylePass    = GetActiveStylePass(); // null until FullResOutput is ready
 
         if(hasActiveStylePass != wasStyleActive)
         {
             wasStyleActive = hasActiveStylePass;
             if(hasActiveStylePass)
             {
+                displayQuad.enabled = false;
                 displayQuad.material = stylizeMat;
                 displayQuad.transform.localScale = QUAD_SCALE_FULLSCREEN;
             }
             else
             {
+                displayQuad.enabled = true;
                 displayQuad.material = displayMat;
                 displayQuad.transform.localScale = QUAD_SCALE_DEPTH;
             }
         }
 
-        if(hasActiveStylePass && activeStylePass?.FullResOutput != null && activeStylePass.FullResOutput.IsCreated())
-            stylizeMat.mainTexture = activeStylePass.FullResOutput;
-        else if(!hasActiveStylePass && output != null)
+        // Update texture every frame — activeStylePass may be null on first frame
+        // until FullResOutput is created, so we keep trying until it's ready
+        if(hasActiveStylePass)
+        {
+            if(activeStylePass?.FullResOutput != null && activeStylePass.FullResOutput.IsCreated())
+            {
+                stylizeMat.mainTexture = activeStylePass.FullResOutput;
+                if(!displayQuad.enabled) displayQuad.enabled = true;
+            }
+        }
+        else if(output != null)
+        {
             displayMat.mainTexture = output;
+        }
 
         float t4 = Time.realtimeSinceStartup;
 

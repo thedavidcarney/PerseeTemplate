@@ -1,0 +1,64 @@
+#pragma kernel CSMain
+
+Texture2D<float> _DepthTex;
+SamplerState sampler_DepthTex;
+
+RWStructuredBuffer<float4x4> _Transforms;
+
+int _GridWidth;
+int _GridHeight;
+float _PinScale;
+float _DisplacementScale;
+float _DisplacementOffset;
+float _WorldWidth;
+float _WorldHeight;
+
+float4x4 TRS(float3 pos, float scale)
+{
+    float4x4 m;
+    m[0] = float4(scale, 0,     0,     pos.x);
+    m[1] = float4(0,     scale, 0,     pos.y);
+    m[2] = float4(0,     0,     scale, pos.z);
+    m[3] = float4(0,     0,     0,     1    );
+    return m;
+}
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= _GridWidth || (int)id.y >= _GridHeight) return;
+
+    int index = id.y * _GridWidth + id.x;
+
+    // Flat-top hex grid spacing
+    // col spacing = 3/4 * hexWidth, row spacing = sqrt(3)/2 * hexWidth
+    // We derive hexWidth from WorldWidth / GridWidth
+    float hexWidth  = _WorldWidth  / (float)_GridWidth;
+    float hexHeight = _WorldHeight / (float)_GridHeight;
+
+    float colSpacing = hexWidth;
+    float rowSpacing = hexHeight;
+
+    // Flat-top: offset every other column by half a row spacing vertically
+    float x = ((float)id.x - (_GridWidth  - 1) * 0.5) * colSpacing;
+    float y = ((float)id.y - (_GridHeight - 1) * 0.5) * rowSpacing;
+
+    // Offset every other column up by half row spacing
+    if(id.x % 2 == 1)
+        y += rowSpacing * 0.5;
+
+    // Sample depth at this pin's position
+    float2 uv = float2(
+        (id.x + 0.5) / (float)_GridWidth,
+        (id.y + 0.5) / (float)_GridHeight
+    );
+    // Adjust UV for hex offset
+    if(id.x % 2 == 1)
+        uv.y = saturate(uv.y + 0.5 / (float)_GridHeight);
+
+    float depth = _DepthTex.SampleLevel(sampler_DepthTex, uv, 0).r;
+
+    float z = _DisplacementOffset + depth * _DisplacementScale;
+
+    _Transforms[index] = TRS(float3(x, y, z), _PinScale);
+}

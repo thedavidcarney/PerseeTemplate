@@ -38,13 +38,16 @@ public class DepthProcessingUI : MonoBehaviour
         "Dilate",
         "ZoomAndMove",
         "Downsample",
-        "Upsample"
+        "Upsample",
+        "BoxBlur",
+        "DepthGhost"
     };
 
     private List<string> availableStylizePassTypes = new List<string>
     {
         "SDFContours",
-        "RainbowTrails"
+        "RainbowTrails",
+        "PinWall"
     };
 
     private bool pendingRemove = false;
@@ -120,16 +123,30 @@ public class DepthProcessingUI : MonoBehaviour
         var passes = Pipeline.passes;
         if(passes.Count == 0) return;
 
-        if(Input.GetKeyDown(KeyCode.DownArrow) || Input.GetKeyDown(KeyCode.S))
+        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
+
+        // Shift+arrow reorders, plain arrow navigates — never both
+        if(shift)
         {
-            focusedPassIndex = Mathf.Min(focusedPassIndex + 1, passes.Count - 1);
-            pendingRemove = false;
+            if(Input.GetKeyDown(KeyCode.UpArrow))
+                MovePass(-1);
+            if(Input.GetKeyDown(KeyCode.DownArrow))
+                MovePass(1);
         }
-        if(Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.W))
+        else
         {
-            focusedPassIndex = Mathf.Max(focusedPassIndex - 1, 0);
-            pendingRemove = false;
+            if(Input.GetKeyDown(KeyCode.DownArrow) || Input.GetKeyDown(KeyCode.S))
+            {
+                focusedPassIndex = Mathf.Min(focusedPassIndex + 1, passes.Count - 1);
+                pendingRemove = false;
+            }
+            if(Input.GetKeyDown(KeyCode.UpArrow) || Input.GetKeyDown(KeyCode.W))
+            {
+                focusedPassIndex = Mathf.Max(focusedPassIndex - 1, 0);
+                pendingRemove = false;
+            }
         }
+
         if(Input.GetKeyDown(KeyCode.Space))
         {
             if(pendingRemove)
@@ -143,12 +160,6 @@ public class DepthProcessingUI : MonoBehaviour
                 focusedParamIndex = 0;
             }
         }
-
-        bool shift = Input.GetKey(KeyCode.LeftShift) || Input.GetKey(KeyCode.RightShift);
-        if(shift && Input.GetKeyDown(KeyCode.UpArrow))
-            MovePass(-1);
-        if(shift && Input.GetKeyDown(KeyCode.DownArrow))
-            MovePass(1);
 
         if(Input.GetKeyDown(KeyCode.Equals))
         {
@@ -246,8 +257,11 @@ public class DepthProcessingUI : MonoBehaviour
             "ZoomAndMove" => new ZoomAndMovePass(),
             "Downsample" => new DownsamplePass(),
             "Upsample" => new UpsamplePass(),
+            "BoxBlur" => new BoxBlurPass(),
+            "DepthGhost" => new DepthGhostPass(),
             "SDFContours" => new SDFContoursPass(),
             "RainbowTrails" => new RainbowTrailsPass(),
+            "PinWall" => new PinWallPass(),
             _ => null
         };
         if(newPass == null) return;
