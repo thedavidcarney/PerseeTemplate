@@ -7,5 +7,6 @@ namespace DepthProcessing
     {
         public int OutputWidth { get; protected set; } = 1920;
         public int OutputHeight { get; protected set; } = 1080;
+        public virtual RenderTexture FullResOutput => null;
     }
 }

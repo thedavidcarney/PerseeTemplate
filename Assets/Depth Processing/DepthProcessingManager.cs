@@ -6,9 +6,10 @@ using OrbbecUnity;
 public class DepthProcessingManager : MonoBehaviour
 {
     public OrbbecFrameSource frameSource;
+    public OrbbecPipeline orbbecPipeline;
     public Renderer displayQuad;
 
-    private static readonly Vector3 QUAD_SCALE_DEPTH = new Vector3(16f, 12f, 1f);
+    private static readonly Vector3 QUAD_SCALE_DEPTH      = new Vector3(16f,   12f, 1f);
     private static readonly Vector3 QUAD_SCALE_FULLSCREEN = new Vector3(20.5f, 12f, 1f);
 
     private DepthProcessingPipeline pipeline;
@@ -20,20 +21,31 @@ public class DepthProcessingManager : MonoBehaviour
     public bool PipelineReady => pipelineReady;
     private bool wasStyleActive = false;
 
+    // Current depth profile width — persisted so UI can read it
+    private int currentProfileWidth = 640;
+    public int CurrentProfileWidth => currentProfileWidth;
+
+    private const string PROFILE_WIDTH_KEY = "Pipeline_ProfileWidth";
+
     void Start()
     {
-        pipeline = gameObject.AddComponent<DepthProcessingPipeline>();
+        pipeline   = gameObject.AddComponent<DepthProcessingPipeline>();
         displayMat = new Material(Shader.Find("Custom/DepthDisplay"));
         stylizeMat = new Material(Shader.Find("Custom/PassThrough"));
         displayQuad.material = displayMat;
         displayQuad.transform.localScale = QUAD_SCALE_DEPTH;
+
+        // Load saved depth resolution and switch to it
+        currentProfileWidth = PlayerPrefs.GetInt(PROFILE_WIDTH_KEY, 640);
+        if(currentProfileWidth != 640)
+            RestartWithProfile(currentProfileWidth);
     }
 
     void Update()
     {
         float fetchStart = Time.realtimeSinceStartup;
         var obDepthFrame = frameSource.GetDepthFrame();
-        float fetchTime = Time.realtimeSinceStartup - fetchStart;
+        float fetchTime  = Time.realtimeSinceStartup - fetchStart;
 
         if(fetchTime > 0.1f)
             Debug.LogWarning($"GetDepthFrame took {fetchTime:F3}s - potential block");
@@ -45,19 +57,35 @@ public class DepthProcessingManager : MonoBehaviour
 
         if(!pipelineReady)
         {
+            // Wait until we get a frame at the expected resolution
+            if(obDepthFrame.width != currentProfileWidth)
+                return;
+
             depthTexture = new Texture2D(obDepthFrame.width, obDepthFrame.height, TextureFormat.R16, false);
 
-            pipeline.passes.Add(new DepthNormalizePass());
-            pipeline.passes.Add(new DepthCropPass());
-            pipeline.passes.Add(new ThresholdPass());
-            pipeline.passes.Add(new ErodePass());
-            pipeline.passes.Add(new DilatePass());
-            pipeline.passes.Add(new UpscaleAndCenterPass());
-            pipeline.passes.Add(new SDFContoursPass());
+            // Try to restore saved pass list, fall back to defaults
+            if(!pipeline.TryLoadPassList())
+            {
+                pipeline.passes.Add(new DepthNormalizePass());
+                pipeline.passes.Add(new DepthCropPass());
+                pipeline.passes.Add(new ThresholdPass());
+                pipeline.passes.Add(new ErodePass());
+                pipeline.passes.Add(new DilatePass());
+                pipeline.passes.Add(new UpscaleAndCenterPass());
+                pipeline.passes.Add(new SDFContoursPass());
+            }
 
             pipeline.Initialize(obDepthFrame.width, obDepthFrame.height);
             pipelineReady = true;
+
+            Debug.Log($"Pipeline initialized at {obDepthFrame.width}x{obDepthFrame.height} with {pipeline.passes.Count} passes");
         }
+
+        // Guard against frames arriving during resolution switch before reinitialization
+        if(depthTexture == null) return;
+
+        // Guard against frame size mismatch during stream transition
+if(obDepthFrame.width != depthTexture.width || obDepthFrame.height != depthTexture.height) return;
 
         float t1 = Time.realtimeSinceStartup;
         depthTexture.LoadRawTextureData(obDepthFrame.data);
@@ -65,10 +93,10 @@ public class DepthProcessingManager : MonoBehaviour
         float t2 = Time.realtimeSinceStartup;
 
         var output = pipeline.Process(depthTexture);
-        float t3 = Time.realtimeSinceStartup;
+        float t3   = Time.realtimeSinceStartup;
 
-        bool hasActiveStylePass = HasActiveStylePass();
-        SDFContoursPass sdf = hasActiveStylePass ? GetActiveSDFPass() : null;
+        bool      hasActiveStylePass = HasActiveStylePass();
+        StylePass activeStylePass    = hasActiveStylePass ? GetActiveStylePass() : null;
 
         if(hasActiveStylePass != wasStyleActive)
         {
@@ -85,18 +113,51 @@ public class DepthProcessingManager : MonoBehaviour
             }
         }
 
-        if(hasActiveStylePass && sdf?.FullResOutput != null && sdf.FullResOutput.IsCreated())
-            stylizeMat.mainTexture = sdf.FullResOutput;
+        if(hasActiveStylePass && activeStylePass?.FullResOutput != null && activeStylePass.FullResOutput.IsCreated())
+            stylizeMat.mainTexture = activeStylePass.FullResOutput;
         else if(!hasActiveStylePass && output != null)
             displayMat.mainTexture = output;
 
         float t4 = Time.realtimeSinceStartup;
 
-        if(Time.frameCount % 60 == 0)
+        // if(Time.frameCount % 60 == 0)
+        // {
+        //     Debug.Log($"FPS: {1.0f / Time.deltaTime:F1} | Passes: {pipeline.passes.Count} | GFX: {SystemInfo.graphicsDeviceType}");
+        //     Debug.Log($"Upload:{(t2-t1)*1000:F1}ms Pipeline:{(t3-t2)*1000:F1}ms Display:{(t4-t3)*1000:F1}ms");
+        // }
+    }
+
+    public void RestartWithProfile(int width)
+    {
+        currentProfileWidth = width;
+        PlayerPrefs.SetInt(PROFILE_WIDTH_KEY, width);
+        PlayerPrefs.Save();
+        Debug.Log($"Restarting pipeline with profile width {width}");
+
+        // Stop Orbbec stream
+        orbbecPipeline.StopPipeline();
+
+        // Swap the matching profile to the front of the array
+        var profiles = orbbecPipeline.orbbecProfiles;
+        for(int i = 0; i < profiles.Length; i++)
         {
-            Debug.Log($"FPS: {1.0f / Time.deltaTime:F1} | Passes: {pipeline.passes.Count} | GFX: {SystemInfo.graphicsDeviceType}");
-            Debug.Log($"Upload:{(t2-t1)*1000:F1}ms Pipeline:{(t3-t2)*1000:F1}ms Display:{(t4-t3)*1000:F1}ms");
+            if(profiles[i].width == width)
+            {
+                var tmp     = profiles[0];
+                profiles[0] = profiles[i];
+                profiles[i] = tmp;
+                break;
+            }
         }
+
+        // Reset pipeline — next Update will reinitialize from new frame dimensions
+        orbbecPipeline.RebuildConfig();
+        pipeline.passes.Clear();
+        pipelineReady = false;
+        depthTexture  = null;
+
+        // Restart Orbbec stream
+        orbbecPipeline.StartPipeline();
     }
 
     private bool HasActiveStylePass()
@@ -109,12 +170,12 @@ public class DepthProcessingManager : MonoBehaviour
         return false;
     }
 
-    private SDFContoursPass GetActiveSDFPass()
+    private StylePass GetActiveStylePass()
     {
         foreach(var pass in pipeline.passes)
         {
-            if(pass is SDFContoursPass sdf && pass.enabled)
-                return sdf;
+            if(pass is StylePass sp && pass.enabled && sp.FullResOutput != null)
+                return sp;
         }
         return null;
     }

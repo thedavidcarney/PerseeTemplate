@@ -29,12 +29,12 @@ namespace DepthProcessing
         private Color lineColor;
 
         private int frameSkipCounter = 0;
-        private const int FRAME_SKIP = 4;
+        private const int FRAME_SKIP = 0;
 
         private List<DepthParameter> parameters;
 
         public override RenderTextureFormat OutputFormat => RenderTextureFormat.RFloat; // THE FIX
-        public RenderTexture FullResOutput => presentRT;
+        public override RenderTexture FullResOutput => presentRT;
 
         public float Frequency { get => frequency; set { frequency = value; } }
         public float LineWidth { get => lineWidth; set { lineWidth = value; } }

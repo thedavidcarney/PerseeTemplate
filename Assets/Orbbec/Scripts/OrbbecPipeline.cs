@@ -157,5 +157,11 @@ namespace OrbbecUnity
         {
             pipeline.Stop();
         }
+
+        public void RebuildConfig()
+        {
+            config.Dispose();
+            InitConfig();
+        }
     }
 }

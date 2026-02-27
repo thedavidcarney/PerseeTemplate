@@ -35,12 +35,16 @@ public class DepthProcessingUI : MonoBehaviour
         "TemporalNoise",
         "Threshold",
         "Erode",
-        "Dilate"
+        "Dilate",
+        "ZoomAndMove",
+        "Downsample",
+        "Upsample"
     };
 
     private List<string> availableStylizePassTypes = new List<string>
     {
-        "SDFContours"
+        "SDFContours",
+        "RainbowTrails"
     };
 
     private bool pendingRemove = false;
@@ -152,6 +156,13 @@ public class DepthProcessingUI : MonoBehaviour
             focusedAddPassIndex = 0;
         }
 
+        if(Input.GetKeyDown(KeyCode.E))
+        {
+            passes[focusedPassIndex].enabled = !passes[focusedPassIndex].enabled;
+            Pipeline.MarkDirty();
+            pendingRemove = false;
+        }
+
         if(Input.GetKeyDown(KeyCode.Minus))
             pendingRemove = true;
     }
@@ -211,6 +222,7 @@ public class DepthProcessingUI : MonoBehaviour
         passes[focusedPassIndex] = passes[newIndex];
         passes[newIndex] = tmp;
         focusedPassIndex = newIndex;
+        Pipeline.MarkDirty();
     }
 
     private void RemoveFocusedPass()
@@ -218,6 +230,7 @@ public class DepthProcessingUI : MonoBehaviour
         Pipeline.passes.RemoveAt(focusedPassIndex);
         focusedPassIndex = Mathf.Clamp(focusedPassIndex, 0, Mathf.Max(0, Pipeline.passes.Count - 1));
         mode = UIMode.PassView;
+        Pipeline.MarkDirty();
     }
 
     private void AddPass(string passType)
@@ -230,13 +243,19 @@ public class DepthProcessingUI : MonoBehaviour
             "Threshold" => new ThresholdPass(),
             "Erode" => new ErodePass(),
             "Dilate" => new DilatePass(),
+            "ZoomAndMove" => new ZoomAndMovePass(),
+            "Downsample" => new DownsamplePass(),
+            "Upsample" => new UpsamplePass(),
             "SDFContours" => new SDFContoursPass(),
+            "RainbowTrails" => new RainbowTrailsPass(),
             _ => null
         };
         if(newPass == null) return;
+        newPass.name = GetUniqueName(newPass.name);
         int insertAt = Mathf.Min(focusedPassIndex + 1, Pipeline.passes.Count);
         Pipeline.passes.Insert(insertAt, newPass);
         focusedPassIndex = insertAt;
+        Pipeline.MarkDirty();
     }
 
     private void AddPassByIndex(int index)
@@ -327,8 +346,25 @@ public class DepthProcessingUI : MonoBehaviour
     private void DrawPassView()
     {
         GUILayout.Label("DEPTH PIPELINE", headerStyle);
-        GUILayout.Label("↑↓ navigate  Space: edit  ±: add/remove  Shift+↑↓: reorder  Tab: close", paramStyle);
+        GUILayout.Label("↑↓ navigate  Space: edit  E: toggle  ±: add/remove  Shift+↑↓: reorder  Tab: close", paramStyle);
         GUILayout.Space(10);
+
+        GUILayout.BeginHorizontal();
+        GUILayout.Label("Depth Res:", paramStyle, GUILayout.Width(80));
+
+        bool isHigh = depthManager.CurrentProfileWidth == 1280;
+
+        GUIStyle lowStyle  = isHigh ? paramStyle        : paramSelectedStyle;
+        GUIStyle highStyle = isHigh ? paramSelectedStyle : paramStyle;
+
+        if(GUILayout.Button("640x400",  lowStyle,  GUILayout.Width(80)))
+            depthManager.RestartWithProfile(640);
+
+        if(GUILayout.Button("1280x800", highStyle, GUILayout.Width(90)))
+            depthManager.RestartWithProfile(1280);
+
+        GUILayout.EndHorizontal();
+        GUILayout.Space(8);
 
         var passes = Pipeline.passes;
         bool separatorDrawn = false;
@@ -496,5 +532,21 @@ public class DepthProcessingUI : MonoBehaviour
             GUILayout.EndHorizontal();
             globalIndex++;
         }
+    }
+
+    private string GetUniqueName(string baseName)
+    {
+        var existingNames = new HashSet<string>();
+        foreach(var p in Pipeline.passes)
+            existingNames.Add(p.name);
+
+        if(!existingNames.Contains(baseName))
+            return baseName;
+
+        int i = 2;
+        while(existingNames.Contains($"{baseName} {i}"))
+            i++;
+
+        return $"{baseName} {i}";
     }
 }
