@@ -1,0 +1,234 @@
+#pragma kernel InjectVelocity
+#pragma kernel AdvectAndDecay
+#pragma kernel AdvectDye
+#pragma kernel DiffuseVelocity
+
+Texture2D<float>    _DepthMask;
+Texture2D<float4>   _MotionVectors;
+RWTexture2D<float4> _VelocityField;
+RWTexture2D<float4> _DyeField;
+Texture2D<float4>   _VelocityFieldRead;
+Texture2D<float4>   _DyeFieldRead;
+
+SamplerState sampler_DepthMask;
+SamplerState sampler_MotionVectors;
+SamplerState sampler_VelocityFieldRead;
+SamplerState sampler_DyeFieldRead;
+
+int   _Width;
+int   _Height;
+int   _SrcWidth;
+int   _SrcHeight;
+float _VelocityDecay;
+float _DyeDecay;
+float _VelocityScale;
+float _InjectionThreshold;
+float _TurbulenceScale;
+float _TurbulenceSpeed;
+float _TurbulenceStrength;
+float _Time;
+
+float2 FluidUV(uint2 id)
+{
+    return (float2(id.xy) + 0.5) / float2(_Width, _Height);
+}
+
+// Velocity stored encoded (0-1, 0.5=no motion) — decode to -1..1 for math
+float2 DecodeVel(float2 encoded)
+{
+    return (encoded - 0.5) * 2.0;
+}
+
+// Encode -1..1 back to 0-1 for storage
+float2 EncodeVel(float2 vel)
+{
+    return vel * 0.5 + 0.5;
+}
+
+float2 ReadVelocity(float2 uv)
+{
+    float2 encoded = _VelocityFieldRead.SampleLevel(sampler_VelocityFieldRead, uv, 0).rg;
+    return DecodeVel(encoded);
+}
+
+// ------------------------------------------------------------------
+// Curl noise for turbulence
+// ------------------------------------------------------------------
+float2 hash22(float2 p)
+{
+    p = float2(dot(p, float2(127.1, 311.7)), dot(p, float2(269.5, 183.3)));
+    return frac(sin(p) * 43758.5453);
+}
+
+float smoothNoise(float2 p)
+{
+    float2 i = floor(p);
+    float2 f = frac(p);
+    float2 u = f * f * (3.0 - 2.0 * f);
+    float a = dot(hash22(i + float2(0,0)), f - float2(0,0));
+    float b = dot(hash22(i + float2(1,0)), f - float2(1,0));
+    float c = dot(hash22(i + float2(0,1)), f - float2(0,1));
+    float d = dot(hash22(i + float2(1,1)), f - float2(1,1));
+    return lerp(lerp(a, b, u.x), lerp(c, d, u.x), u.y);
+}
+
+// Curl of a scalar noise field — divergence-free so it swirls without
+// creating sources/sinks
+float2 CurlNoise(float2 uv, float scale, float t)
+{
+    float2 p = uv * scale + float2(t * 0.3, t * 0.17);
+    float eps = 0.01;
+    float n0 = smoothNoise(p + float2(0, eps));
+    float n1 = smoothNoise(p - float2(0, eps));
+    float n2 = smoothNoise(p + float2(eps, 0));
+    float n3 = smoothNoise(p - float2(eps, 0));
+    // Partial derivatives → perpendicular = curl
+    float dndx = (n2 - n3) / (2.0 * eps);
+    float dndy = (n0 - n1) / (2.0 * eps);
+    return float2(dndy, -dndx);
+}
+
+// ------------------------------------------------------------------
+// CMYK painterly palette
+// Ink-like: cyan, magenta, yellow cycle; dark key at low values
+// ------------------------------------------------------------------
+float3 CMYKColor(float t, float2 uv)
+{
+    t = saturate(t);
+
+    // Four ink colors — C M Y K (dark)
+    float3 key     = float3(0.05, 0.04, 0.10); // deep dark blue-black
+    float3 cyan    = float3(0.00, 0.78, 0.82);
+    float3 magenta = float3(0.85, 0.10, 0.55);
+    float3 yellow  = float3(0.95, 0.90, 0.05);
+
+    float3 col;
+    if(t < 0.2)
+        col = lerp(key,     cyan,    t / 0.2);
+    else if(t < 0.5)
+        col = lerp(cyan,    magenta, (t - 0.2) / 0.3);
+    else if(t < 0.8)
+        col = lerp(magenta, yellow,  (t - 0.5) / 0.3);
+    else
+        col = lerp(yellow,  cyan,    (t - 0.8) / 0.2); // wrap back to cyan for continuity
+
+    return col;
+}
+
+// -----------------------------------------------------------------------
+// Kernel 1: Inject velocity
+// -----------------------------------------------------------------------
+[numthreads(8, 8, 1)]
+void InjectVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= _Width || (int)id.y >= _Height) return;
+
+    float2 uv   = FluidUV(id.xy);
+    float4 mv   = _MotionVectors.SampleLevel(sampler_MotionVectors, uv, 0);
+    float2 vel  = DecodeVel(mv.rg);
+    float  mag  = mv.b;
+    float  mask = _DepthMask.SampleLevel(sampler_DepthMask, uv, 0).r;
+
+    float2 existing = ReadVelocity(uv);
+
+    if(mag > _InjectionThreshold && mask > 0.5)
+    {
+        float2 newVel = existing + vel * mag * _VelocityScale;
+        newVel = clamp(newVel, -1.0, 1.0);
+        float  newMag = length(newVel);
+        _VelocityField[id.xy] = float4(EncodeVel(newVel), newMag, 1);
+    }
+    else
+    {
+        float existingMag = length(existing);
+        _VelocityField[id.xy] = float4(EncodeVel(existing), existingMag, 1);
+    }
+}
+
+// -----------------------------------------------------------------------
+// Kernel 2: Advect velocity, apply decay + curl turbulence
+// -----------------------------------------------------------------------
+[numthreads(8, 8, 1)]
+void AdvectAndDecay(uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= _Width || (int)id.y >= _Height) return;
+
+    float2 uv    = FluidUV(id.xy);
+    float2 texel = float2(1.0 / _Width, 1.0 / _Height);
+
+    float2 vel = ReadVelocity(uv);
+
+    // Semi-Lagrangian advection
+    float2 prevUV  = saturate(uv - vel * texel * 20.0);
+    float2 advectedVel = ReadVelocity(prevUV) * _VelocityDecay;
+
+    // Add curl turbulence on top of the velocity field
+    float2 curl = CurlNoise(uv, _TurbulenceScale, _Time * _TurbulenceSpeed);
+    advectedVel += curl * _TurbulenceStrength;
+    advectedVel  = clamp(advectedVel, -1.0, 1.0);
+
+    float advectedMag = length(advectedVel);
+    _VelocityField[id.xy] = float4(EncodeVel(advectedVel), advectedMag, 1);
+}
+
+// -----------------------------------------------------------------------
+// Kernel 3: Advect dye through velocity field
+// -----------------------------------------------------------------------
+[numthreads(8, 8, 1)]
+void AdvectDye(uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= _Width || (int)id.y >= _Height) return;
+
+    float2 uv    = FluidUV(id.xy);
+    float2 texel = float2(1.0 / _Width, 1.0 / _Height);
+
+    float2 vel    = ReadVelocity(uv);
+    float2 prevUV = saturate(uv - vel * texel * 20.0);
+
+    float3 advectedDye = _DyeFieldRead.SampleLevel(sampler_DyeFieldRead, prevUV, 0).rgb * _DyeDecay;
+
+    // Inject fresh dye where motion exists on the silhouette
+    float4 mv   = _MotionVectors.SampleLevel(sampler_MotionVectors, uv, 0);
+    float  mag  = mv.b;
+    float  mask = _DepthMask.SampleLevel(sampler_DepthMask, uv, 0).r;
+
+    if(mag > _InjectionThreshold && mask > 0.5)
+    {
+        float3 freshColor = CMYKColor(mag, uv);
+        advectedDye = lerp(advectedDye, freshColor, mag * 0.8);
+    }
+
+    _DyeField[id.xy] = float4(advectedDye, 1);
+}
+
+// -----------------------------------------------------------------------
+// Kernel 4: Diffuse velocity — box-blur the field so energy spreads outward
+// -----------------------------------------------------------------------
+[numthreads(8, 8, 1)]
+void DiffuseVelocity(uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= _Width || (int)id.y >= _Height) return;
+
+    float2 uv    = FluidUV(id.xy);
+    float2 texel = float2(1.0 / _Width, 1.0 / _Height);
+
+    // 3x3 box blur of the velocity field
+    float2 acc = float2(0, 0);
+    float  wTotal = 0;
+
+    for(int dy = -1; dy <= 1; dy++)
+    {
+        for(int dx = -1; dx <= 1; dx++)
+        {
+            float2 sampleUV = saturate(uv + float2(dx, dy) * texel);
+            float2 v = ReadVelocity(sampleUV);
+            float  w = (dx == 0 && dy == 0) ? 4.0 : 1.0; // weight center more
+            acc    += v * w;
+            wTotal += w;
+        }
+    }
+
+    float2 diffused = acc / wTotal;
+    float  mag = length(diffused);
+    _VelocityField[id.xy] = float4(EncodeVel(diffused), mag, 1);
+}

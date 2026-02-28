@@ -2,6 +2,7 @@ using UnityEngine;
 using DepthProcessing;
 using Orbbec;
 using OrbbecUnity;
+using System.Linq;
 
 public class DepthProcessingManager : MonoBehaviour
 {
@@ -42,6 +43,8 @@ public class DepthProcessingManager : MonoBehaviour
 
     void Update()
     {
+        if(pipelineReady) WireMotionVectorSources();
+
         float fetchStart = Time.realtimeSinceStartup;
         var obDepthFrame = frameSource.GetDepthFrame();
         float fetchTime  = Time.realtimeSinceStartup - fetchStart;
@@ -75,6 +78,7 @@ public class DepthProcessingManager : MonoBehaviour
             }
 
             pipeline.Initialize(obDepthFrame.width, obDepthFrame.height);
+            WireMotionVectorSources();
             pipelineReady = true;
 
             Debug.Log($"Pipeline initialized at {obDepthFrame.width}x{obDepthFrame.height} with {pipeline.passes.Count} passes");
@@ -95,7 +99,7 @@ if(obDepthFrame.width != depthTexture.width || obDepthFrame.height != depthTextu
         float t3   = Time.realtimeSinceStartup;
 
         bool      hasActiveStylePass = HasActiveStylePass();
-        StylePass activeStylePass    = GetActiveStylePass(); // null until FullResOutput is ready
+        StylePass activeStylePass    = GetActiveStylePass();
 
         if(hasActiveStylePass != wasStyleActive)
         {
@@ -114,8 +118,6 @@ if(obDepthFrame.width != depthTexture.width || obDepthFrame.height != depthTextu
             }
         }
 
-        // Update texture every frame — activeStylePass may be null on first frame
-        // until FullResOutput is created, so we keep trying until it's ready
         if(hasActiveStylePass)
         {
             if(activeStylePass?.FullResOutput != null && activeStylePass.FullResOutput.IsCreated())
@@ -189,6 +191,22 @@ if(obDepthFrame.width != depthTexture.width || obDepthFrame.height != depthTextu
                 return sp;
         }
         return null;
+    }
+
+    private void WireMotionVectorSources()
+    {
+        var mvPass = pipeline.passes.OfType<MotionVectorPass>().FirstOrDefault();
+        if(mvPass == null) return;
+
+        foreach(var pass in pipeline.passes)
+        {
+            if(pass is MotionVectorViewerPass viewer && viewer.Source == null)
+                viewer.Source = mvPass;
+            if(pass is RainbowTrailsPass rainbow && rainbow.MotionVectorSource == null)
+                rainbow.MotionVectorSource = mvPass;
+            if(pass is FluidTrailsPass fluid && fluid.MotionVectorSource == null)
+                fluid.MotionVectorSource = mvPass;
+        }
     }
 
     void OnEnable()

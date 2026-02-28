@@ -1,0 +1,105 @@
+#pragma kernel CSMain
+
+Texture2D<float>        _CurrentFrame;
+Texture2D<float>        _PreviousFrame;
+RWTexture2D<float4>     _VectorField;
+
+SamplerState sampler_CurrentFrame;
+SamplerState sampler_PreviousFrame;
+
+int   _FieldWidth;
+int   _FieldHeight;
+int   _SrcWidth;
+int   _SrcHeight;
+int   _SearchRadius;
+float _MotionThreshold;  // minimum SAD improvement to count as real motion
+
+[numthreads(8, 8, 1)]
+void CSMain(uint3 id : SV_DispatchThreadID)
+{
+    if((int)id.x >= _FieldWidth || (int)id.y >= _FieldHeight) return;
+
+    float2 blockSize = float2(_SrcWidth  / (float)_FieldWidth,
+                              _SrcHeight / (float)_FieldHeight);
+
+    int2 blockOrigin = int2(
+        (int)(id.x * blockSize.x),
+        (int)(id.y * blockSize.y)
+    );
+    int bw = max(1, (int)blockSize.x);
+    int bh = max(1, (int)blockSize.y);
+    int blockPixels = bw * bh;
+
+    // First compute SAD at zero offset (no motion baseline)
+    float zeroSAD = 0;
+    for(int bx = 0; bx < bw; bx++)
+    {
+        for(int by = 0; by < bh; by++)
+        {
+            int2   px    = clamp(blockOrigin + int2(bx,by), int2(0,0), int2(_SrcWidth-1,_SrcHeight-1));
+            float2 uv    = (px + 0.5) / float2(_SrcWidth, _SrcHeight);
+            float  curr  = _CurrentFrame.SampleLevel(sampler_CurrentFrame,   uv, 0).r;
+            float  prev  = _PreviousFrame.SampleLevel(sampler_PreviousFrame, uv, 0).r;
+            zeroSAD += abs(curr - prev);
+        }
+    }
+    // Normalize by block size so threshold is resolution-independent
+    zeroSAD /= float(blockPixels);
+
+    // If even the zero-offset SAD is below threshold, definitely no motion
+    if(zeroSAD < _MotionThreshold)
+    {
+        _VectorField[int2(id.x, id.y)] = float4(0.5, 0.5, 0.0, 1.0);
+        return;
+    }
+
+    // Search for best matching offset
+    float bestSAD    = zeroSAD;
+    int2  bestOffset = int2(0, 0);
+
+    for(int ox = -_SearchRadius; ox <= _SearchRadius; ox++)
+    {
+        for(int oy = -_SearchRadius; oy <= _SearchRadius; oy++)
+        {
+            if(ox == 0 && oy == 0) continue;
+
+            float sad = 0;
+            for(int bx2 = 0; bx2 < bw; bx2++)
+            {
+                for(int by2 = 0; by2 < bh; by2++)
+                {
+                    int2 srcPx  = clamp(blockOrigin + int2(bx2,by2), int2(0,0), int2(_SrcWidth-1,_SrcHeight-1));
+                    int2 prevPx = clamp(srcPx + int2(ox,oy),         int2(0,0), int2(_SrcWidth-1,_SrcHeight-1));
+
+                    float2 srcUV  = (srcPx  + 0.5) / float2(_SrcWidth, _SrcHeight);
+                    float2 prevUV = (prevPx + 0.5) / float2(_SrcWidth, _SrcHeight);
+
+                    float curr = _CurrentFrame.SampleLevel(sampler_CurrentFrame,   srcUV,  0).r;
+                    float prev = _PreviousFrame.SampleLevel(sampler_PreviousFrame, prevUV, 0).r;
+                    sad += abs(curr - prev);
+                }
+            }
+            sad /= float(blockPixels);
+
+            if(sad < bestSAD)
+            {
+                bestSAD    = sad;
+                bestOffset = int2(ox, oy);
+            }
+        }
+    }
+
+    // If best offset is still zero, no motion
+    if(bestOffset.x == 0 && bestOffset.y == 0)
+    {
+        _VectorField[int2(id.x, id.y)] = float4(0.5, 0.5, 0.0, 1.0);
+        return;
+    }
+
+    float maxR = float(_SearchRadius);
+    float velX = (bestOffset.x / maxR) * 0.5 + 0.5;
+    float velY = (bestOffset.y / maxR) * 0.5 + 0.5;
+    float mag  = length(float2(bestOffset)) / (maxR * 1.414);
+
+    _VectorField[int2(id.x, id.y)] = float4(velX, velY, mag, 1.0);
+}

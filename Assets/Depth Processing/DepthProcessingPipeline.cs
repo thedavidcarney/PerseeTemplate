@@ -80,8 +80,14 @@ namespace DepthProcessing
             else if(name.StartsWith("SDFContours"))      pass = new SDFContoursPass(name);
             else if(name.StartsWith("RainbowTrails"))    pass = new RainbowTrailsPass(name);
             else if(name.StartsWith("PinWall"))          pass = new PinWallPass(name);
-            else if(name.StartsWith("DepthGhost"))          pass = new DepthGhostPass(name);
+            else if(name.StartsWith("DepthGhost"))       pass = new DepthGhostPass(name);
             else if(name.StartsWith("BoxBlur"))          pass = new BoxBlurPass(name);
+            else if(name.StartsWith("MotionVector") && !name.StartsWith("MotionVectorViewer")) pass = new MotionVectorPass(name);
+            else if(name.StartsWith("MotionVectorViewer")) pass = new MotionVectorViewerPass(name);
+            else if(name.StartsWith("Outline"))      pass = new OutlinePass(name);
+            else if(name.StartsWith("Invert"))       pass = new InvertPass(name);
+            else if(name.StartsWith("Contrast"))     pass = new ContrastPass(name);
+            else if(name.StartsWith("FluidTrails")) pass = new FluidTrailsPass(name);
 
             return pass;
         }
@@ -160,22 +166,17 @@ namespace DepthProcessing
 
             foreach(var pass in passes)
             {
-                if(pass is TemporalNoisePass temporal)
-                    temporal.Dispose();
-                if(pass is SDFContoursPass sdf)
-                    sdf.Dispose();
-                if(pass is DownsamplePass downsample)
-                    downsample.Dispose();
-                if(pass is UpsamplePass upsample)
-                    upsample.Dispose();
-                if(pass is UpscaleAndCenterPass upscaleandcenter)
-                    upscaleandcenter.Dispose();
-                if(pass is RainbowTrailsPass rainbow)
-                    rainbow.Dispose();
-                if(pass is PinWallPass pinwall)
-                    pinwall.Dispose();
-                if(pass is DepthGhostPass depthghost)
-                    depthghost.Dispose();
+                if(pass is TemporalNoisePass temporal) temporal.Dispose();
+                if(pass is SDFContoursPass sdf) sdf.Dispose();
+                if(pass is DownsamplePass downsample) downsample.Dispose();
+                if(pass is UpsamplePass upsample) upsample.Dispose();
+                if(pass is UpscaleAndCenterPass upscaleandcenter) upscaleandcenter.Dispose();
+                if(pass is RainbowTrailsPass rainbow) rainbow.Dispose();
+                if(pass is PinWallPass pinwall) pinwall.Dispose();
+                if(pass is DepthGhostPass depthghost) depthghost.Dispose();
+                if(pass is MotionVectorPass mv) mv.Dispose();
+                if(pass is MotionVectorViewerPass mvv) mvv.Dispose();
+                if(pass is FluidTrailsPass fluid) fluid.Dispose();
             }
         }
     }

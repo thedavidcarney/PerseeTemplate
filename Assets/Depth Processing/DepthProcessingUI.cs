@@ -40,14 +40,20 @@ public class DepthProcessingUI : MonoBehaviour
         "Downsample",
         "Upsample",
         "BoxBlur",
-        "DepthGhost"
+        "DepthGhost",
+        "MotionVector",
+        "Outline",
+        "Invert",
+        "Contrast",
     };
 
     private List<string> availableStylizePassTypes = new List<string>
     {
         "SDFContours",
         "RainbowTrails",
-        "PinWall"
+        "PinWall",
+        "MotionVectorViewer",
+        "FluidTrails"
     };
 
     private bool pendingRemove = false;
@@ -262,6 +268,12 @@ public class DepthProcessingUI : MonoBehaviour
             "SDFContours" => new SDFContoursPass(),
             "RainbowTrails" => new RainbowTrailsPass(),
             "PinWall" => new PinWallPass(),
+            "MotionVector"       => new MotionVectorPass(),
+            "MotionVectorViewer" => new MotionVectorViewerPass(),
+            "Outline"            => new OutlinePass(),
+            "Invert"             => new InvertPass(),
+            "Contrast"           => new ContrastPass(),
+            "FluidTrails" => new FluidTrailsPass(),
             _ => null
         };
         if(newPass == null) return;
